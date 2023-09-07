@@ -1,0 +1,26 @@
+{
+  "name": "lit-letters",
+  "version": "1.0.0",
+  "description": "Project files for lit letters",
+  "main": "./interface/server/index.js",
+  "scripts": {
+		"start": "node --inspect interface/server/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gunderson/led-letters.git"
+  },
+  "author": "Patrick Gunderson",
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/gunderson/led-letters/issues"
+  },
+  "homepage": "https://github.com/gunderson/led-letters#readme",
+  "dependencies": {
+    "express": "^4.18.2",
+    "lodash": "^4.17.21",
+    "node-sass-middleware": "^1.0.1",
+    "pug": "^3.0.2"
+  }
+}
