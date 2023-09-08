@@ -1,20 +1,27 @@
 const express = require('express');
+const morgan = require('morgan')
 const sassMiddleware = require('node-sass-middleware');
 const _ = require('lodash');
-const app = express();
 const port = process.env.PORT || 8000;
 const PATH = require("path");
 const FS = require('fs');
 
+const app = express();
+
+app.use(morgan(':method :url :status :res[content-length] - :response-time ms'))
+
 app.get("/css/*",
 	sassMiddleware({
 		src: __dirname + '/../www/sass',
-		dest: __dirname + '/../../built/css',
+		dest: __dirname + '/../www/built/css',
 		debug: false,
 		indentedSyntax : true,
-		outputStyle: 'compressed',
-		prefix: '/css'
+		// outputStyle: 'compressed',
+		prefix: '/css',
+		force: true
 	})
+	,
+	express.static(__dirname + '/../www/built/css')
 );
 
 
@@ -26,8 +33,8 @@ app.use('/robots.txt', function (req, res, next) {
 	res.send(FS.readFileSync(__dirname + '/../www/assets/robots.txt'));
 });
 
-app.use(express.static(__dirname + '/../www'));
-app.use('/js', express.static(__dirname));
+// app.use(express.static(__dirname + '/../www'));
+app.use('/js', express.static(__dirname + '/../www/js'));
 app.use('/images', express.static(__dirname + '/../www/assets/images'));
 // app.use('/videos', express.static(__dirname + '/../www/assets/videos'));
 // app.use('/fonts', express.static(__dirname + '/../www/assets/fonts'));

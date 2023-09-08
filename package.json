@@ -4,7 +4,7 @@
   "description": "Project files for lit letters",
   "main": "./interface/server/index.js",
   "scripts": {
-		"start": "node --inspect interface/server/index.js",
+    "start": "node --inspect interface/server/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -20,6 +20,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "lodash": "^4.17.21",
+    "morgan": "^1.10.0",
     "node-sass-middleware": "^1.0.1",
     "pug": "^3.0.2"
   }
