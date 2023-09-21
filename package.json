@@ -1,6 +1,6 @@
 {
   "name": "lit-letters",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Project files for lit letters",
   "main": "./interface/server/server.js",
   "type": "module",
