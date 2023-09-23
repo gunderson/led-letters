@@ -37,6 +37,17 @@ html(lang="en")
 							each mode in animModes
 								option(value=mode) #{mode}
 						button#set-animation-mode SET
+					label#animation-speed-x
+						span Animation Speed X
+						span#speed-x-value
+						span + x 
+						input#speed-x-slider(type='range', min=-30, max=30, step=1, value=1)
+					label#animation-speed-y
+						span Animation Speed Y
+						span#speed-y-value
+						span + y 
+						input#speed-y-slider(type='range', min=-30, max=30, step=1, value=1)
+					
 		section#colormap-menu
 			h2 Color Maps
 			.contents
@@ -76,11 +87,24 @@ html(lang="en")
 		section#camera-pixel-analyzer 
 			h2 Camera Pixel Analyzer
 			.contents
-				canvas#cam-analysis(width=800, height=600)
 				video#cam-display(autoplay=true, width=800, height=600)
-				button#start-camera Start Camera
-				button#start-mapping Start mapping 
-				button#map-next Map Next 
+				canvas#cam-analysis(width=800, height=600)
+				.controls
+					select#fixture-to-map
+					button#start-camera Start Camera
+					button#start-mapping Start mapping 
+					button#map-next Map Next
+					button#save-map Save Map
+					#threshold-adjustments
+						label#threshold-brightness
+							span Threshold Brightness
+							span#threshold-brightness-value 225
+							input#threshold-brightness-slider(type="range", min=0, max=255, step=1, value=225)
+
+						label#threshold-range
+							span Threshold Range
+							span#threshold-range-value 10
+							input#threshold-range-slider(type="range", min=0, max=128, step=1, value=10)
 		footer 
 	script(type="text/javascript", src="js/banner.js")
 	script(type="text/javascript", src="/socket.io/socket.io.js")

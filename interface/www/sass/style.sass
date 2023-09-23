@@ -17,6 +17,9 @@ header
 	width: 100%
 
 h1
+	font-size: 20rem
+	margin: 0
+	padding: 0
 
 section
 	margin: 0
@@ -72,10 +75,18 @@ section
 			select#animation-mode-selector
 				vertical-align: middle
 				margin: 0 8rem
+				
 		#colormap-menu
 			#colormaps
 				margin: 20rem 0
 			#upload-image-form
+
+		#animation-speed-x, #animation-speed-y
+			span, label
+				vertical-align: middle
+				margin: 0 2rem
+
+
 #light-fixtures
 	tr
 		&.active
@@ -106,6 +117,28 @@ section
 			&:hover
 				background: #222
 				color: #fff
+
+section#camera-pixel-analyzer 
+	#cam-analysis
+		display: inline-block
+		background-color: #111
+	#cam-display
+		display: inline-block
+		background-color: #111
+
+	#threshold-adjustments
+		margin: 10rem 0
+		span, input
+			vertical-align: middle
+			margin: 0 2rem
+		label
+			font-size: 12rem
+			display: inline-block
+			padding: 0 10rem
+			border-left: 1px solid white
+			&:nth-child(1)
+				padding-left: 0
+				border-left: none
 
 .animation-image
 	text-align: middle

@@ -526,6 +526,12 @@ io.on('connection', (socket) => {
 		setModeByName(modeName);
 	});
 
+	socket.on('set-animation-speed', speeds =>{
+		animationSpeedX = speeds.x;
+		animationSpeedY = speeds.y;
+		console.log('set-animation-speed', speeds)
+	})
+
 	socket.on('set-fps', data => {
 		console.log('    Socket: set-fps', data.fps)
 		animationPlayer.fps = data.fps;
@@ -537,22 +543,38 @@ io.on('connection', (socket) => {
 	});
 
 	socket.on('start-pixel-mapping', (message) => {
+
 		// initialize mapping mode
 		if (!message.fixtureName){
 			initializePixelMapping(PIXEL_MAPPING_MODE.FULL);
 		} else {
-			initializePixelMapping(PIXEL_MAPPING_MODE.SINGLE, message.fixtureNam);
+			initializePixelMapping(PIXEL_MAPPING_MODE.SINGLE, message.fixtureName);
 		}
+		let pixel = currentPixelMappingFixture.pixels[pixelMappingIndex];
+		pixel.fixtureName = currentPixelMappingFixture.hostname;
+		socket.emit('map-next-pixel', pixel);
+	});
+
+	socket.on('save-map', () => {
+		// save a backup
+		fs.cpSync(path.resolve(__dirname, './savedLightFixtures.json'), path.resolve(__dirname, `./savedLightFixtures.json.${Date.now()}`));
+		// write the new file
+		fs.writeFileSync(path.resolve(__dirname, './savedLightFixtures.json'), JSON.stringify(connectedLightFixtures,null, '\t'));
+		console.log("saved")
 	});
 
 	socket.on('found-pixel', (message) => {
-		console.log('    Socket: found-pixel')
+		console.log('Socket: found-pixel\n', message)
 		// find the pixel
+		let pixel = currentPixelMappingFixture.pixels.find(px => px.id === message.pixel.id);
+		
 		// update its location
+		pixel.x = message.pixel.x;
+		pixel.y = message.pixel.y;
+
 		// save location to DB
 		// send next pixel to front-end
-
-		// when complete,
+		advancePixelMapSequence(socket);
 	});
 
 	socket.on('disconnect', () => {
@@ -571,7 +593,10 @@ function emitState(recipient) {
 	animModes
 	recipient.emit('state', {
 		playState: animationPlayer.playState,
-		animationSpeed: animationSpeed,
+		animationSpeed: {
+			x: animationSpeedX,
+			y: animationSpeedY
+		},
 		fps: animationPlayer.fps,
 		animationImage: path.basename(animationImage.src),
 		fixtures: connectedLightFixtures,
@@ -602,9 +627,7 @@ setupImage('horiz-stripes.png');
 function setupImage(imageName) {
 	loadImage(__uploads + '/' + imageName).then((image) => {
 		animationImage = image;
-		console.log('animationImage', animationImage);
-
-		ctx.drawImage(image, 0, 0, WIDTH, HEIGHT);
+		ctx.drawImage(image, 0, 0, animationImage.width, animationImage.height);
 		animationPlayer.play();
 		emitState();
 	});
@@ -717,7 +740,8 @@ let currentPixelMappingFixture = '';
 let pixelMappingMode = PIXEL_MAPPING_MODE.FULL;
 
 function initializePixelMapping(mode, fixtureName){
-	pixelIndex = 0;
+	pixelMappingIndex = 0;
+	pixelMappingMode = mode;
 	if (mode === PIXEL_MAPPING_MODE.SINGLE && fixtureName){
 		// find the client
 		currentPixelMappingFixture = connectedLightFixtures.find(fixture => fixtureName === fixture.hostname);
@@ -729,11 +753,35 @@ function initializePixelMapping(mode, fixtureName){
 		currentPixelMappingFixture = connectedLightFixtures[0];
 	}
 	animUpdate = singlePixelSequenceMode;
+
 }
 
-function advancePixelMapSequence(){
-	// if the current index > num pixels in current fixture, advance fixture
-	// if mode is single, finish
+function advancePixelMapSequence(socket){
+	if(++pixelMappingIndex >= currentPixelMappingFixture.pixels.length){
+		if(pixelMappingMode === PIXEL_MAPPING_MODE.FULL){
+			// get the next fixture and start again from zero
+			pixelMappingIndex = 0;
+			// if there are no more fixtures, signal complete
+			let fixtureIndex = connectedLightFixtures.indexOf(currentPixelMappingFixture);
+			if (++fixtureIndex >= connectedLightFixtures.length){
+				socket.emit('mapping-complete');
+				// change animation mode
+				emitState();
+				return;
+			}
+			currentPixelMappingFixture = connectedLightFixtures[fixtureIndex];
+		}
+		if(pixelMappingMode === PIXEL_MAPPING_MODE.SINGLE){
+			// mapping is complete
+			socket.emit('mapping-complete');
+			// change animation mode
+			emitState();
+		}
+	}
+	
+	let pixel = currentPixelMappingFixture.pixels[pixelMappingIndex];
+	pixel.fixtureName = currentPixelMappingFixture.hostname;
+	socket.emit('map-next-pixel', pixel);
 }
 
 function singlePixelSequenceMode(){
@@ -743,7 +791,7 @@ function singlePixelSequenceMode(){
 	});
 	// find the pixel to light
 		// find the fixture that the pixel belongs to
-		currentPixelMappingFixture
+		currentPixelMappingFixture.pixels[pixelMappingIndex].color = 0xffffff;
 
 	// set currentClient pixel to white
 	// send message to front-end that pixel is lit
@@ -823,22 +871,30 @@ function gradientMode(timing) {}
 let animX = 0;
 let animY = 0;
 
-function slideImageXMode(timing) {
-	animX += 1;
-	animX = animX % WIDTH;
+let animationSpeedX = 1;
+let animationSpeedY = 1;
 
-	ctx.drawImage(animationImage, -WIDTH + animX, 0, WIDTH, HEIGHT);
-	ctx.drawImage(animationImage, animX, 0, WIDTH, HEIGHT);
+function slideImageXMode(timing) {
+	let imageHeight = Math.max(HEIGHT, animationImage.height);
+	let imageWidth = Math.max(WIDTH, animationImage.width);
+
+	animX += animationSpeedX;
+	animX = animX % imageWidth;
+
+	ctx.drawImage(animationImage, -imageWidth + animX, 0, imageWidth, imageHeight);
+	ctx.drawImage(animationImage, animX, 0, imageWidth, imageHeight);
 
 	sampleCanvasAtPixels(ctx, flatPixels);
 }
 
 function slideImageYMode(timing) {
-	animY += 1;
-	animY = animY % HEIGHT;
+	let imageHeight = Math.max(HEIGHT, animationImage.height);
+	let imageWidth = Math.max(WIDTH, animationImage.width);
+	animY += animationSpeedY;
+	animY = animY % imageHeight;
 
-	ctx.drawImage(animationImage, 0, -HEIGHT + animY, WIDTH, HEIGHT);
-	ctx.drawImage(animationImage, 0, animY, WIDTH, HEIGHT);
+	ctx.drawImage(animationImage, 0, -imageHeight + animY, imageWidth, imageHeight);
+	ctx.drawImage(animationImage, 0, animY, imageWidth, imageHeight);
 
 	sampleCanvasAtPixels(ctx, flatPixels);
 }
@@ -850,7 +906,7 @@ function slideImageXYMirroredMode() {}
 
 // ------------------------------------------------------------------------
 // Find light in image
-
+/*
 const camCanvas = createCanvas(WIDTH, HEIGHT);
 const camCtx = camCanvas.getContext('2d');
 
@@ -974,7 +1030,7 @@ function getColorBounds(imageData, thresholdColor, threshold = 24) {
 		centerY,
 	};
 }
-
+*/
 
 // FIXME: translate prop coords into light fixtures
 // ------------------------------------------------------------------------

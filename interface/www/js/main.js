@@ -31,16 +31,37 @@ $('#start-camera').addEventListener('click', startCamera);
 
 $('#start-mapping').addEventListener('click', () => {
 	pixelMappingMode = true;
-	socket.emit('start-pixel-mapping', {
-		fixtureName: '', // leave blank for all
-	});
+	let fixtureName = $('#fixture-to-map').value;
+	prepareToMapFixture(fixtureName);
+});
+
+$('#save-map').addEventListener('click', () => {
+	socket.emit('save-map');
+});
+
+$('input#threshold-brightness-slider').addEventListener('change', event => {
+	thresholdBrightness = event.target.value;
+});
+
+$('input#threshold-brightness-slider').addEventListener('input', event => {
+	$('#threshold-brightness-value').innerHTML = pad(event.target.value, 3, "0");
+	thresholdBrightness = event.target.value;
+});
+
+$('input#threshold-range-slider').addEventListener('change', event => {
+	thresholdRange = event.target.value;
+});
+
+$('input#threshold-range-slider').addEventListener('input', event => {
+	$('#threshold-range-value').innerHTML = pad(event.target.value, 3, "0");
+	thresholdRange = event.target.value;
 });
 
 $('#map-next').addEventListener('click', () => {
+	currentLocalPixel.x = mappedBounds.centerX / WIDTH;
+	currentLocalPixel.y = mappedBounds.centerY / HEIGHT;
 	socket.emit('found-pixel', {
-		id: 0,
-		x: 0,
-		y: 0,
+		pixel: currentLocalPixel
 	});
 });
 
@@ -53,6 +74,30 @@ $('#fps-slider').addEventListener('change', (event) => {
 
 $('#fps-slider').addEventListener('input', (event) => {
 	$('#fps-value').innerHTML = event.target.value;
+});
+
+$('#speed-x-slider').addEventListener('change', (event) => {
+	// change event is not fired if the value is set via script
+	socket.emit('set-animation-speed', {
+		x: parseInt(event.target.value),
+		y: parseInt($('#speed-y-slider').value)
+	});
+});
+
+$('#speed-x-slider').addEventListener('input', (event) => {
+	$('#speed-x-value').innerHTML = event.target.value;
+});
+
+$('#speed-y-slider').addEventListener('change', (event) => {
+	// change event is not fired if the value is set via script
+	socket.emit('set-animation-speed', {
+		x: parseInt($('#speed-x-slider').value),
+		y: parseInt(event.target.value),
+	});
+});
+
+$('#speed-y-slider').addEventListener('input', (event) => {
+	$('#speed-y-value').innerHTML = event.target.value;
 });
 
 $$$('button.fps').forEach((btn) => {
@@ -162,7 +207,12 @@ socket.on('state', (state) => {
 		}
 	});
 
-	console.log(state);
+	$('#speed-x-slider').value = state.animationSpeed.x;
+	$('#speed-x-value').innerHTML = state.animationSpeed.x;
+	$('#speed-y-slider').value = state.animationSpeed.y;
+	$('#speed-y-value').innerHTML = state.animationSpeed.y;
+
+	// console.log(state);
 	displayFPS(state.fps);
 
 	if (state.playState === 'PAUSED') {
@@ -189,16 +239,19 @@ socket.on('state', (state) => {
 
 	connectedLightFixtures = state.fixtures;
 
+	let optionString = connectedLightFixtures.map(fixture => `<option value='${fixture.hostname}'>${fixture.hostname}</option>`)
+	$('#fixture-to-map').innerHTML = optionString;
+
+
 	let $$$lightFixtures = $$$('#light-fixtures table tr');
-	if ($$$lightFixtures)
-		// keep the title-row
-		$$$lightFixtures.shift();
+	// keep the title-row
+	$$$lightFixtures.shift();
 	$$$lightFixtures.forEach((row) => {
 		row.parentNode.remove(row);
 	});
 
 	connectedLightFixtures.forEach((fixture) => {
-		console.log('fixture', fixture);
+		// console.log('fixture', fixture);
 		let $el = document.createElement('tr');
 		$el.innerHTML = `<td>${fixture.hostname}</td>
 			<td data-name="${fixture.hostname}" class="action begin-mapping">Map Fixture</td>
@@ -206,9 +259,12 @@ socket.on('state', (state) => {
 			<td data-name="${fixture.hostname}" data-highlightMode="${HIGHLIGHT_MODE.SOLO_FIXTURE}" class="action solo">Solo</td>`;
 
 		$el.dataset.name = fixture.hostname;
+		// console.log("#light-fixtures table", $('#light-fixtures table'));
+
 		$('#light-fixtures table').appendChild($el);
 
 		$el.querySelector('.begin-mapping').addEventListener('click', (event) => {
+			prepareToMapFixture(event.target.dataset.name);
 			setActiveCell(event.target);
 			console.log('click', event.target.dataset.name);
 		});
@@ -311,20 +367,23 @@ socket.on('state', (state) => {
 	console.log('animation mode', state.animationMode);
 });
 
-socket.on('map-next-pixel', (message) => {
-	let pixelIndex = message.pixelIndex;
-	// snapshot the camera feed to canvas
-	// find the pixel location
-	// record it in the pixel data
-	// send the location back to the server
-	socket.emit('found-pixel-location', {
-		pixelIndex: pixelIndex,
-		currentPixel: {},
-	});
+var currentLocalPixel;
+
+socket.on('map-next-pixel', pixel => {
+	let fixture = connectedLightFixtures.find(fixture => fixture.hostname === pixel.fixtureName);
+	currentLocalPixel = fixture.pixels.find(localPixel => localPixel.id === pixel.id);
 });
+
+socket.on('mapping-complete', () => {
+	clearInterval(mappingInterval);
+	// clean up
+})
 
 // --------------------------------------------------------------------------------------
 // Pixel Mapping
+
+var mappingInterval;
+var mappedBounds;
 
 function prepareToMapFixture(fixtureName) {
 	//start the camera
@@ -333,14 +392,36 @@ function prepareToMapFixture(fixtureName) {
 	socket.emit('start-pixel-mapping', {
 		fixtureName: fixtureName,
 	});
+	mappingInterval = setInterval(processCamera, 35);
 }
-function prepareToMapGroup(fixtureName) {
+
+function prepareToMapGroup(groupName) {
 	//start the camera
 	startCamera();
 	//send message to server
 	socket.emit('start-pixel-mapping', {
-		fixtureName: fixtureName,
+		groupName: groupName,
 	});
+	mappingInterval = setInterval(processCamera, 35);
+}
+
+function processCamera(){
+	camCtx.drawImage(camDisplay,0,0);
+	let imageData = camCtx.getImageData(0,0,WIDTH,HEIGHT);
+
+	let thresholdColor = thresholdBrightness << 16 | thresholdBrightness << 8 | thresholdBrightness;
+
+	let thresholdData = thresholdMask(imageData, thresholdColor);
+	camCtx.putImageData(thresholdData,0,0);
+	// find the pixel location
+	mappedBounds = getColorBounds(thresholdData, 0xffffff, thresholdRange);
+
+	camCtx.lineWidth = 1;
+	camCtx.strokeStyle = "#00ff00";
+	camCtx.strokeRect(mappedBounds.minX, mappedBounds.minY, mappedBounds.maxX - mappedBounds.minX, mappedBounds.maxY - mappedBounds.minY);
+	camCtx.beginPath()
+	camCtx.arc(mappedBounds.centerX, mappedBounds.centerY, 4, 0, Math.PI * 2);
+	camCtx.stroke();
 }
 
 // --------------------------------------------------------------------------------------
@@ -358,7 +439,11 @@ const camCtx = camCanvas.getContext('2d');
 const camDisplay = document.getElementById('cam-display');
 let cameraStream;
 
+var thresholdBrightness = 225;
+var thresholdRange = 10;
+
 function startCamera() {
+	camCtx.willReadFrequently = true;
 	//getusermedia
 	navigator.mediaDevices
 		.getUserMedia({
@@ -413,14 +498,13 @@ function thresholdMask(imageData, thresholdColor) {
 	return imageData;
 }
 
-function getColorBounds(imageData, thresholdColor, threshold = 24) {
-	let minColor = Color.parseColor(thresholdColor);
-	let maxColor = Color.parseColor(thresholdColor);
+function getColorBounds(imageData, targetColor, threshold = 24) {
+	let minColor = Color.parseColor(targetColor);
+	let maxColor = Color.parseColor(targetColor);
 
 	minColor.r = Math.max(0, minColor.r - threshold);
 	minColor.g = Math.max(0, minColor.g - threshold);
 	minColor.b = Math.max(0, minColor.b - threshold);
-
 	maxColor.r = Math.min(0xff, maxColor.r + threshold);
 	maxColor.g = Math.min(0xff, maxColor.g + threshold);
 	maxColor.b = Math.min(0xff, maxColor.b + threshold);
@@ -436,7 +520,7 @@ function getColorBounds(imageData, thresholdColor, threshold = 24) {
 		let dataIndex = pixelIndex * 4;
 
 		let x = pixelIndex % imageData.width;
-		let y = Math.floor(pixelIndex / imageData.height);
+		let y = Math.floor(pixelIndex / imageData.width);
 
 		let r = imageData.data[dataIndex];
 		let g = imageData.data[dataIndex + 1];
@@ -472,8 +556,8 @@ function getColorBounds(imageData, thresholdColor, threshold = 24) {
 		};
 	}
 
-	let centerX = minX + (maxX - minX);
-	let centerY = minY + (maxY - minY);
+	let centerX = minX + ((maxX - minX) / 2);
+	let centerY = minY + ((maxY - minY) / 2);
 
 	return {
 		minX,
@@ -564,13 +648,13 @@ function draw() {
 	// displayCtx.fillRect(0,0,WIDTH,HEIGHT);
 	displayCtx.clearRect(0,0,WIDTH,HEIGHT);
 
-	displayCtx.lineWidth = 2;
+	displayCtx.lineWidth = 1;
 
 	let allPixels = connectedLightFixtures.map((fixture) => fixture.pixels);
 	allPixels = [].concat.apply(this, allPixels);
 	allPixels.forEach((pxl) => {
 		let color = pxl.color;
-		let strokeColor = 0xffffff;
+		let strokeColor = 0x888888;
 
 		if (highlightMode === HIGHLIGHT_MODE.HIGHLIGHT_GROUP && highlightLocalOnly && pxl.group !== highlightGroupName){
 			color = multiplyColor(color, lowlightAmount);
@@ -584,8 +668,10 @@ function draw() {
 		displayCtx.fillStyle = `rgb(${getR(color)}, ${getG(color)}, ${getB(color)})`;	
 		displayCtx.strokeStyle = `rgb(${getR(strokeColor)}, ${getG(strokeColor)}, ${getB(strokeColor)})`;
 
-		displayCtx.fillRect(pxl.x * WIDTH, pxl.y * HEIGHT, 15, 15);
-		displayCtx.strokeRect(pxl.x * WIDTH, pxl.y * HEIGHT, 15, 15);
+		displayCtx.beginPath();
+		displayCtx.arc(pxl.x * WIDTH, pxl.y * HEIGHT, 10, 0, 2 * Math.PI);
+		displayCtx.fill();
+		displayCtx.stroke();
 	});
 }
 
@@ -593,6 +679,31 @@ function Pixel(x, y) {
 	this.x = x;
 	this.y = y;
 	this.color = 0xff00ff;
+}
+
+class Color{
+	constructor(input){
+		if (typeof input === 'string'){
+			input = parseInt(input, 16);
+		}
+		this.r = Color.getR(input);
+		this.g = Color.getG(input);
+		this.b = Color.getB(input);
+	}
+
+	static parseColor(input){
+		return new Color(input);
+	}
+
+	static getR(color) {
+		return (color >> 16) & 0xff;
+	}
+	static getG(color) {
+		return (color >> 8) & 0xff;
+	}
+	static getB(color) {
+		return color & 0xff;
+	}
 }
 
 function getR(color) {
@@ -640,4 +751,15 @@ function $$$(selector) {
 }
 function $(selector) {
 	return document.querySelector(selector);
+}
+
+
+function pad(string, length, char){
+	if (typeof string !== 'string'){
+		string = string.toString();
+	}
+	while(string.length < length){
+		string = char + string;
+	}
+	return string;
 }

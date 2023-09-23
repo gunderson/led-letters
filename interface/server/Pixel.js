@@ -1,12 +1,12 @@
 export default class Pixel {
-	constructor(x, y, id, group, fixtureId) {
+	constructor(x, y, id, group, fixtureName) {
 		// color map projection positions
 		this.group = group;
 		this.id = id;
 		this.x = x;
 		this.y = y;
 		this.color = 0xff00ff;
-        this.fixtureId = 0;
+        this.fixtureName = 0;
 	}
 
 	getColorArray() {
@@ -20,6 +20,7 @@ export default class Pixel {
 			color: this.color,
 			x: this.x,
 			y: this.y,
+			fixtureName: this.fixtureName
 		};
 	}
 }
