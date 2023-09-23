@@ -15,7 +15,6 @@
 // TODO: generate gradient images for gradient mode
 // TODO: add radial gradient draw mode
 
-
 // TODO: add peak collections for client handling?
 
 import mdns from 'mdns';
@@ -28,10 +27,12 @@ import osc from 'osc';
 import { SerialPort } from 'serialport';
 import AnimationPlayer from './lib/art-kit/src/media/AnimationPlayer.js';
 import FrameTime from './lib/art-kit/src/media/FrameTime.js';
+import Color from './lib/art-kit/src/pixels/Color.js';
 import { pad } from './lib/art-kit/src/Text.js';
 import { createCanvas, loadImage } from 'canvas';
 import { Server as IO } from 'socket.io';
 import express from 'express';
+import session from 'express-session';
 import morgan from 'morgan';
 import nodeSassMiddleware from 'node-sass-middleware';
 import multer from 'multer';
@@ -41,185 +42,113 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { ChildProcess } from 'child_process';
 import http from 'http';
+import Pixel from './Pixel.js';
 
-// load data
-import info from '../../package.json' assert { type: 'json' };
-import state from './state.json' assert { type: 'json' };
-import propCoords from './propcoords.json' assert { type: 'json' };
-
-const HTTP_PORT = process.env.PORT || info.port || 8000;
-const MDNS_NAME = 'light-server';
+// ------------------------------------------------------------------------
+// file paths
 
 // workaround for modules, yolo
 const __filename = fileURLToPath(import.meta.url);
+
 const __dirname = path.dirname(__filename);
 const __www = path.resolve(__dirname + '/../www');
 const __uploads = path.resolve(__www + '/assets/uploads');
 
+// ------------------------------------------------------------------------
+// load data
+
+let info = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json')));
+let state = JSON.parse(fs.readFileSync(path.resolve(__dirname, './state.json')));
+let savedLightFixtureData = JSON.parse(fs.readFileSync(path.resolve(__dirname, './savedLightFixtures.json')));
+
+// let propCoords = JSON.parse(fs.readFileSync(path.resolve(__dirname, './propCoords.json')));
+// let letterFixtureData = JSON.parse(fs.readFileSync(path.resolve(__dirname, './letterFixture.json')));
+
+// ------------------------------------------------------------------------
+// server info
+
+const HTTP_PORT = process.env.PORT || info.port || 8000;
+const MDNS_NAME = 'light-server';
 const OSC_PORT = 57120;
 
 // ------------------------------------------------------------------------
-// MDNS
+// classes
 
-// advertise an HTTP server on port 3000
-bonjour.publish({
-    name: MDNS_NAME, 
-    host: MDNS_NAME + '.local', 
-    type: 'http', 
-    port: HTTP_PORT 
-})
-
-bonjour.publish({
-    name: MDNS_NAME, 
-    host: MDNS_NAME + '.local', 
-    type: 'osc',
-	protocol: 'udp',
-    port: OSC_PORT 
-})
-
-// Initialize mDNS advertising for server discovery
-// const adHttp = mdns.createAdvertisement(mdns.tcp('http'), HTTP_PORT, { host: MDNS_NAME });
-// const adOSC = mdns.createAdvertisement(mdns.udp('osc'), OSC_PORT, { host: MDNS_NAME }); 
-
-// adHttp.start();
-// adOSC.start();
-
-// ------------------------------------------------------------------------
-// OSC
-
-// Create an OSC UDP Port
-const oscPort = new osc.UDPPort({
-  localAddress: '0.0.0.0',
-  localPort: OSC_PORT,
-  metadata: true
-});
-
-// Start OSC port and mDNS advertising
-oscPort.open();
-
-// Listen for incoming OSC messages
-oscPort.on('connect', message => {
-	// TODO: parse message
-  // register connection
-	let client = new Client();
-
-	// TODO: ensure it isn't a duplicate client
-	connectedClients.push(client);
-});
-
-oscPort.on('message', (message, timeTag, info) => {
-	console.log('OSC Message', message);
-	console.log('OSC timeTag', timeTag);
-	console.log('OSC info', info);
-
-	switch (message.address){
-		case "/light-fixture-info":
-			// create client
-			let hostname = message.args[0].value;
-			let ip = message.args[1].value;
-			let port = message.args[2].value;
-			let numPixels = message.args[3].value;
-
-			let preexistingClient = getClientByName(hostname);
-			if (!preexistingClient){
-				addClient(new OscClient(hostname, ip, port, numPixels));
-			} else {
-				// update client
-				preexistingClient.update(ip, port, numPixels);
-			}
-		break;
-	}
-});
-
-// Store connected clients
-var connectedClients = [];
-
-function addClient(client){
-	let hostname = client.hostname;
-	let clients = _.filter(connectedClients, {'hostname': hostname});
-	if (clients.length > 0){
-		console.warn('Attempting to add Existing Client');
-		clients[0].update(client.ip, client.port, client.numPixels);
-		client = clients.shift();
-		_.remove(connectedClients, c => clients.indexOf(c) > -1);
-		return (client);
-	}
-	connectedClients.push(client);
-	return client;
-}
-
-function getClientByName(hostname){
-	let clients = _.filter(connectedClients, {'hostname': hostname});
-	let client = clients.length > 0 ? clients[0] : null;
-	// we should always only have one client. Kill the extras
-	if (clients.length > 1){
-		client = clients.pop();
-		clients.forEach( c => c.destroy);
-	}
-	return client;
-}
-
-class OscClient {
-	constructor(hostname, ip, port, numPixels){
+class LightFixture {
+	constructor(hostname, ip, port, numPixels) {
 		this.hostname = hostname;
 		this.update(ip, port, numPixels);
 	}
 
-	makePixels(){
-		this.pixels = new Array(this.numPixels).map(p => new Pixel())
+	makePixels() {
+		this.pixels = new Array(this.numPixels).map((p) => new Pixel());
 		return this.pixels;
 	}
 
-	update(ip, port, numPixels){
+	update(ip, port, numPixels) {
 		this.ip = ip;
 		this.port = port;
 		this.numPixels = numPixels;
 		this.makePixels();
 		this.makeOscPort();
 
-		this.sendMessage("/setSyncTime", [
-			FrameTime.fromMillis(animationPlayer.currentTime, animationPlayer.fps).timecode, 
-			animationPlayer.fps
+		this.sendMessage('/setSyncTime', [
+			FrameTime.fromMillis(animationPlayer.currentTime, animationPlayer.fps)
+				.timecode,
+			animationPlayer.fps,
 		]);
-		this.sendMessage("/sync");
+		this.sendMessage('/sync');
 		return this;
 	}
 
-	sendMessage(address, args = []){
-		args = args.map(value => {
+	sendMessage(address, args = []) {
+		args = args.map((value) => {
 			return {
 				type: inferOSCArgumentType(value),
-				value: value
-			}
+				value: value,
+			};
 		});
 
-
-		this.oscPort.send({
-			address: address,
-			args: args
-		}, this.ip, this.port);
+		this.oscPort.send(
+			{
+				address: address,
+				args: args,
+			},
+			this.ip,
+			this.port
+		);
 	}
 
-	makeOscPort(){
+	makeOscPort() {
 		if (this.oscPort) this.oscPort.close();
 		this.oscPort = new osc.UDPPort({
 			localAddress: '0.0.0.0',
 			localPort: OSC_PORT + 1, // TODO: open unique port per device
 			remoteAddress: this.ip,
-			remotePort: this.port
-		})
+			remotePort: this.port,
+		});
 		this.oscPort.open();
 		return this.oscPort;
 	}
 
-	toJSON(){
+	toJSON() {
 		return {
-			'hostname': this.hostname,
-			'ip': this.ip,
-			'port': this.port,
-			'numPixels': this.numPixels,
-			'pixels': JSON.stringify(this.pixels)
-		}
+			hostname: this.hostname,
+			ip: this.ip,
+			port: this.port,
+			numPixels: this.numPixels,
+			pixels: this.pixels,
+		};
+	}
+
+	static fromObject(obj){
+		let lf = new LightFixture();
+		lf.hostname = obj.hostname;
+		lf.numPixels = obj.pixels.length;
+		lf.pixels = obj.pixels.map((px,i) => {
+			return new Pixel(px.x, px.y, i, px.group);
+		});
+		return lf;
 	}
 
 	destroy() {
@@ -229,39 +158,148 @@ class OscClient {
 	}
 }
 
-function broadcastTime(){
-
+class FrontEndClient{
+	constructor(id, socket){
+		this.socket = socket;
+		this.id = id;
+	}
+	destroy(){
+		this.socket = null;
+		this.id = null;
+	}
 }
 
-function broadcastSync(){
+// ------------------------------------------------------------------------
+// MDNS
 
+// advertise an HTTP server on port 3000
+bonjour.publish({
+	name: MDNS_NAME,
+	host: MDNS_NAME + '.local',
+	type: 'http',
+	port: HTTP_PORT,
+});
+
+bonjour.publish({
+	name: MDNS_NAME,
+	host: MDNS_NAME + '.local',
+	type: 'osc',
+	protocol: 'udp',
+	port: OSC_PORT,
+});
+
+// Initialize mDNS advertising for server discovery
+// const adHttp = mdns.createAdvertisement(mdns.tcp('http'), HTTP_PORT, { host: MDNS_NAME });
+// const adOSC = mdns.createAdvertisement(mdns.udp('osc'), OSC_PORT, { host: MDNS_NAME });
+
+// adHttp.start();
+// adOSC.start();
+
+// ------------------------------------------------------------------------
+// OSC
+
+// Create an OSC UDP Port
+const oscPort = new osc.UDPPort({
+	localAddress: '0.0.0.0',
+	localPort: OSC_PORT,
+	metadata: true,
+});
+
+// Start OSC port and mDNS advertising
+oscPort.open();
+
+// Listen for incoming OSC messages
+oscPort.on('connect', (message) => {
+	// TODO: parse message
+	// register connection
+	let client = new Client();
+
+	// TODO: ensure it isn't a duplicate client
+	connectedLightFixtures.push(client);
+});
+
+oscPort.on('message', (message, timeTag, info) => {
+	console.log('OSC Message', message);
+	console.log('OSC timeTag', timeTag);
+	console.log('OSC info', info);
+
+	switch (message.address) {
+		case '/light-fixture-info':
+			// create client
+			let hostname = message.args[0].value;
+			let ip = message.args[1].value;
+			let port = message.args[2].value;
+			let numPixels = message.args[3].value;
+
+			let preexistingClient = getClientByName(hostname);
+			if (!preexistingClient) {
+				addClient(new LightFixture().update(hostname, ip, port, numPixels));
+			} else {
+				// update client
+				preexistingClient.update(ip, port, numPixels);
+			}
+			break;
+	}
+});
+
+// Store connected clients
+var connectedLightFixtures = [];
+
+function addClient(client) {
+	let hostname = client.hostname;
+	let clients = _.filter(connectedLightFixtures, { hostname: hostname });
+	if (clients.length > 0) {
+		console.warn('Attempting to add Existing Client');
+		clients[0].update(client.ip, client.port, client.numPixels);
+		client = clients.shift();
+		_.remove(connectedLightFixtures, (c) => clients.indexOf(c) > -1);
+		return client;
+	}
+	connectedLightFixtures.push(client);
+	return client;
 }
 
-function destroyAllClients(){
-	connectedClients.forEach(c => c.destroy());
+function getClientByName(hostname) {
+	let clients = _.filter(connectedLightFixtures, { hostname: hostname });
+	let client = clients.length > 0 ? clients[0] : null;
+	// we should always only have one client. Kill the extras
+	if (clients.length > 1) {
+		client = clients.pop();
+		clients.forEach((c) => c.destroy);
+	}
+	return client;
 }
 
-function inferOSCArgumentType (arg) {
+
+
+function broadcastTime() {}
+
+function broadcastSync() {}
+
+function destroyAllClients() {
+	connectedLightFixtures.forEach((c) => c.destroy());
+}
+
+function inferOSCArgumentType(arg) {
 	var type = typeof arg;
 
 	switch (type) {
-		case "boolean":
-			return arg ? "T" : "F";
-		case "string":
-			return "s";
-		case "number":
+		case 'boolean':
+			return arg ? 'T' : 'F';
+		case 'string':
+			return 's';
+		case 'number':
 			// return "f";
-			return (arg >> 0) === arg ? "i" : "f";
-		case "undefined":
-			return "N";
-		case "object":
+			return arg >> 0 === arg ? 'i' : 'f';
+		case 'undefined':
+			return 'N';
+		case 'object':
 			if (arg === null) {
-				return "N";
-			} else if (arg instanceof Uint8Array ||
-				arg instanceof ArrayBuffer) {
-				return "b";
-			} else if (typeof arg.high === "number" && typeof arg.low === "number") {
-				return "h";
+				return 'N';
+			} else if (arg instanceof Uint8Array || arg instanceof ArrayBuffer) {
+				return 'b';
+			} else if (typeof arg.high === 'number' && typeof arg.low === 'number') {
+				return 'h';
 			}
 			break;
 	}
@@ -272,6 +310,15 @@ function inferOSCArgumentType (arg) {
 
 const app = express();
 app.use(morgan('dev'));
+app.set('trust proxy', 1);
+
+// session Handling
+app.use(session({
+	secret: 'led-lights + keyboard cat',
+	resave: false,
+	saveUninitialized: true,
+	cookie: { secure: false }
+  }))
 
 // file upload Handling
 
@@ -311,13 +358,12 @@ function getUploadedImages() {
 	return files;
 }
 
-function getSerialList(){
-	SerialPort.list()
-		.then((ports) =>{
-			ports.forEach(function(port){
-			console.log("Port: ", port);
-			})
+function getSerialList() {
+	SerialPort.list().then((ports) => {
+		ports.forEach(function (port) {
+			console.log('Port: ', port);
 		});
+	});
 }
 getSerialList();
 
@@ -366,8 +412,10 @@ app.use((req, res, next) => {
 });
 
 app.get('/', (req, res) => {
-	console.log('index');
-	res.render('index');
+	res.render('index', {
+		request: "request",
+		animModes: _.keys(animModes)
+	});
 });
 
 app.post('/github-webhook', (req, res) => {
@@ -423,15 +471,31 @@ const server = http.createServer(app);
 // ------------------------------------------------------------------------
 // SOCKET.IO
 
-const io = new IO(server);
-io.on('connection', (socket) => {
-	console.log('connection made');
 
-	socket.on('sync', time => {
+
+const frontEndClients = [];
+const io = new IO(server);
+
+io.on('connection', (socket) => {
+	var clientAddress = socket.conn.remoteAddress;
+	// add to connections if not already listed
+	// if listed, update socket
+	let existingClient = frontEndClients.find(conn => conn.id === clientAddress)
+	
+	if (existingClient){
+		console.log('updated preexisting front-end client', clientAddress);
+		existingClient.socket = socket;
+	} else {
+		let frontEndClient = new FrontEndClient(clientAddress, socket);
+		frontEndClients.push(frontEndClient);
+		console.log('Added new client', clientAddress);
+	}
+
+	socket.on('sync', (time) => {
 		time = time || 0;
 		animationPlayer.currentTime = 0;
 		io.emit('sync', time);
-	})
+	});
 
 	socket.on('toggle-play', () => {
 		if (animationPlayer.playState === AnimationPlayer.PAUSED) {
@@ -439,43 +503,64 @@ io.on('connection', (socket) => {
 		} else if (animationPlayer.playState === AnimationPlayer.PLAYING) {
 			animationPlayer.pause();
 		}
-		console.log('toggle-play', animationPlayer.playState);
+		// emitState();
 	});
 
-	socket.on('remove-anim-image', imageUrl => {
+	socket.on('remove-anim-image', (imageUrl) => {
 		// TODO: remove animation image from __uploads
 		// TODO: refrest list
 		// TODO: if current animation image is to be deleted pick next
-	})
-
-	socket.on('set-pixel-locations', pixelLocations => {
-		// send pixel Locations from web UI in proportional coordinates against a 16:9 canvas
 	});
 
-	socket.on('set-anim-image', imageUrl => {
+	socket.on('get-fixtures', () => {
+		// send pixel Locations in proportional coordinates against a 4x3 canvas
+		socket.emit('set-fixtures', connectedLightFixtures);
+	});
+
+	socket.on('set-anim-image', (imageUrl) => {
 		let imageName = path.basename(imageUrl);
 		setupImage(imageName);
 	});
 
-	socket.on('set-mode', modeName => {
+	socket.on('set-animation-mode', (modeName) => {
 		setModeByName(modeName);
 	});
 
-	socket.on('set-speed', speed => {
-		animationSpeed = speed;
+	socket.on('set-fps', data => {
+		console.log('    Socket: set-fps', data.fps)
+		animationPlayer.fps = data.fps;
+		animationFrameTime.fps = data.fps;
 	});
 
-	socket.on('set-fps', fps => {
-	
-	});
-
-	socket.on('set-colors', _colors => {
+	socket.on('set-colors', (_colors) => {
 		colors = _colors;
 	});
 
+	socket.on('start-pixel-mapping', (message) => {
+		// initialize mapping mode
+		if (!message.fixtureName){
+			initializePixelMapping(PIXEL_MAPPING_MODE.FULL);
+		} else {
+			initializePixelMapping(PIXEL_MAPPING_MODE.SINGLE, message.fixtureNam);
+		}
+	});
+
+	socket.on('found-pixel', (message) => {
+		console.log('    Socket: found-pixel')
+		// find the pixel
+		// update its location
+		// save location to DB
+		// send next pixel to front-end
+
+		// when complete,
+	});
+
 	socket.on('disconnect', () => {
+		// remove from list of connections
 		console.log('user disconnected');
 	});
+
+
 	let list = getUploadedImages();
 	socket.emit('upload-list', list);
 	emitState();
@@ -483,16 +568,18 @@ io.on('connection', (socket) => {
 
 function emitState(recipient) {
 	recipient = recipient || io;
+	animModes
 	recipient.emit('state', {
-		'playState': animationPlayer.playState,
-		'animationSpeed': animationSpeed,
-		'fps': animationPlayer.fps,
-		'animationImage': path.basename(animationImage.src),
-		'clients': connectedClients.map(c => c.toJSON())
+		playState: animationPlayer.playState,
+		animationSpeed: animationSpeed,
+		fps: animationPlayer.fps,
+		animationImage: path.basename(animationImage.src),
+		fixtures: connectedLightFixtures,
+		animationMode: animModeName
 	});
 }
 
-function sendFrame(frameBuffer){
+function sendFrame(frameBuffer) {
 	io.emit('frame', frameBuffer);
 }
 
@@ -502,7 +589,6 @@ server.listen(HTTP_PORT, () => {
 
 // ------------------------------------------------------------------------
 // DRAWING
-
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -546,53 +632,31 @@ function getColorSampleProportional(imageData, propX, propY) {
 	return (r << 16) | (g << 8) | b;
 }
 
+console.log('emitState', emitState);
+
+
 let animationPlayer = new AnimationPlayer({
 	update: update,
 	draw: draw,
-	fps: 10,
+	fps: 30,
+	onChange: (changes) => {
+		emitState();
+	}
 });
 
 let animationFrameTime = new FrameTime();
 animationFrameTime.fps = animationPlayer.fps;
 
 
-class Pixel {
-	constructor(x,y){
-		// color map projection positions
-		this.x = x;
-		this.y = y;
-		this.color = 0xff00ff;
-	}
+function getNextPixelId(){
+	// find the last used pixelId
+	let lastId = _.flatMap(connectedLightFixtures, lf => lf.pixels)
+	.reduce((m, px) => {
+		return px.id <= m ? m : px.id
+	}, -1);
 
-	getColorArray(){
-		return [this.color >> 16, (this.color >> 8) & 0xff, this.color & 0xff];
-	}
-
-	toJSON(){
-		return {
-			'x': this.x,
-			'y': this.y,
-			'color': this.color,
-		}
-	}
+	return lastId + 1;
 }
-
-let letterPixels = {
-	p: propCoords.p.map((coord) => {
-		return new Pixel(coord[0], coord[1]);
-	}),
-	j: propCoords.j.map((coord) => {
-		return new Pixel(coord[0], coord[1]);
-	}),
-	g: propCoords.g.map((coord) => {
-		return new Pixel(coord[0], coord[1]);
-	}),
-};
-
-let flatPixels = []
-	.concat(letterPixels.p)
-	.concat(letterPixels.j)
-	.concat(letterPixels.g);
 
 function update(timing) {
 	if (!animationImage) return;
@@ -600,58 +664,124 @@ function update(timing) {
 }
 
 function draw() {
-	io.emit('led-state', {
-		colors: flatPixels.map((pixel) => pixel.color),
+	// trim down connected light fixtures
+	let fixtureColorData = connectedLightFixtures.map(fixture => {
+		return {
+			hostname: fixture.hostname,
+			pixels: fixture.pixels.map(pixel => {
+				return {
+					color: pixel.color,
+					group: pixel.group,
+					id: pixel.id,
+					fixture: fixture.hostname
+				};
+			})
+		};
+	})
+
+	io.emit('draw', {
+		timecode: animationFrameTime.parseTotalMillis(animationPlayer.currentTime).toSMPTETimecode(),
+		currentTime: animationPlayer.currentTime,
+		currentTick: animationPlayer.currentTick,
+		fixtureData: fixtureColorData
 	});
 
 	sendPixelColors();
 }
 
-function sendPixelColors(){
-	let colorArray = _.flatMap(flatPixels, pixel => pixel.getColorArray());
+function sendPixelColors() {
+	// FIXME: this function really only supports a single light fixture and needs to be changed
+	let colorArray = _.flatMap(flatPixels, (pixel) => pixel.getColorArray());
 	let colorBuffer = new Uint8Array(colorArray).buffer;
-	let timecode = FrameTime.fromMillis(animationPlayer.currentTime, animationPlayer.fps).timecode;
-		connectedClients.forEach(client => {
-			client.sendMessage("/pixelColors", [
-				timecode,
-				colorBuffer
-			]);
-		});
+	let timecode = FrameTime.fromMillis(
+		animationPlayer.currentTime,
+		animationPlayer.fps
+	).timecode;
+	connectedLightFixtures.forEach((client) => {
+		client.sendMessage('/pixelColors', [timecode, colorBuffer]);
+	});
 }
+
+
+// ------------------------------------------------------------------------
+// Pixel Mapping Mode
+
+const PIXEL_MAPPING_MODE = {
+	FULL: 'FULL',
+	SINGLE: 'SINGLE'
+};
+
+let pixelMappingIndex = 0;
+let lastPixelMappingixelIndex = 0;
+let currentPixelMappingFixture = '';
+let pixelMappingMode = PIXEL_MAPPING_MODE.FULL;
+
+function initializePixelMapping(mode, fixtureName){
+	pixelIndex = 0;
+	if (mode === PIXEL_MAPPING_MODE.SINGLE && fixtureName){
+		// find the client
+		currentPixelMappingFixture = connectedLightFixtures.find(fixture => fixtureName === fixture.hostname);
+		if (!currentPixelMappingFixture){
+			console.warn('No Client with the name', fixtureName);
+			currentPixelMappingFixture = connectedLightFixtures[0];
+		}
+	} else {
+		currentPixelMappingFixture = connectedLightFixtures[0];
+	}
+	animUpdate = singlePixelSequenceMode;
+}
+
+function advancePixelMapSequence(){
+	// if the current index > num pixels in current fixture, advance fixture
+	// if mode is single, finish
+}
+
+function singlePixelSequenceMode(){
+	// set all device pixels to black
+	connectedLightFixtures.forEach((client) => {
+		client.pixels.forEach(pixel => pixel.color = 0);
+	});
+	// find the pixel to light
+		// find the fixture that the pixel belongs to
+		currentPixelMappingFixture
+
+	// set currentClient pixel to white
+	// send message to front-end that pixel is lit
+	
+}
+
+
 
 // ------------------------------------------------------------------------
 // Drawing Modes
 
-function setModeByName(modeName){
-	if (modes[modeName]){
-		if (modes[modeName].setup){
-			modes[modeName].setup();
+function setModeByName(modeName) {
+	if (animModes[modeName]) {
+		if (animModes[modeName].setup) {
+			animModes[modeName].setup();
 		}
-		animUpdate = modes[modeName].update;
+		animUpdate = animModes[modeName].update;
+		animModeName = modeName;
 	}
 }
 
-let modes = {
-	'solid-color': {'update': solidColorMode},
-	'gradient': {'update': gradientMode},
-	'slide-image-y': {'update': slideImageYMode},
-	'slide-image-x': {'update': slideImageXMode},
-	'slide-image-x-y': {'update': slideImageXYMode},
-	'slide-image-y-mirrored': {'update': slideImageYMirroredMode},
-	'slide-image-x-mirrored': {'update': slideImageXMirroredMode},
-	'slide-image-x-y-mirrored': {'update': slideImageXYMirroredMode},
-	'blink': {'update': blinkMode}
-}
+let animModes = {
+	'solid-color': { update: solidColorMode },
+	'gradient': { update: gradientMode },
+	'slide-image-y': { update: slideImageYMode },
+	'slide-image-x': { update: slideImageXMode },
+	'slide-image-x-y': { update: slideImageXYMode },
+	'slide-image-y-mirrored': { update: slideImageYMirroredMode },
+	'slide-image-x-mirrored': { update: slideImageXMirroredMode },
+	'slide-image-x-y-mirrored': { update: slideImageXYMirroredMode },
+	'blink': { update: blinkMode },
+};
 
 let animUpdate = slideImageYMode;
+let animModeName = 'slide-image-y';
 let animationSpeed = 1;
 
-
-let colors = [
-	0xffffff, 
-	0xff0000,
-	0x0000ff
-];
+let colors = [0xffffff, 0xff0000, 0x0000ff];
 
 let blinkState = 0;
 let blinkFrameInterval = 1;
@@ -659,27 +789,27 @@ let blinkStateFrames = 0;
 
 let blinkTimeChange = Date.now();
 
-function blinkMode(timing){
-	let newblinkState = (timing.currentTick % (blinkFrameInterval * 2)) < blinkFrameInterval ? 1 : 0;
+function blinkMode(timing) {
+	let newblinkState =
+		timing.currentTick % (blinkFrameInterval * 2) < blinkFrameInterval ? 1 : 0;
 
 	// console.log(`timing.currentTick ${timing.currentTick}`);
-	if (newblinkState === blinkState){
+	if (newblinkState === blinkState) {
 		blinkStateFrames++;
 	} else {
-		let now = Date.now()
+		let now = Date.now();
 		// console.log(`BlinkState was steady on ${blinkState} for ${blinkStateFrames} frames. Over ${now - blinkTimeChange}ms.`);
 		blinkStateFrames = 1;
 		blinkState = newblinkState;
 		blinkTimeChange = now;
-		let timecode = FrameTime.fromMillis(timing.currentTime, animationPlayer.fps).timecode;
-		connectedClients.forEach(client => {
-			client.sendMessage("/led", [
-				timecode,
-				blinkState
-			]);
+		let timecode = FrameTime.fromMillis(
+			timing.currentTime,
+			animationPlayer.fps
+		).timecode;
+		connectedLightFixtures.forEach((client) => {
+			client.sendMessage('/led', [timecode, blinkState]);
 		});
 	}
-
 }
 
 function solidColorMode(timing) {
@@ -688,9 +818,7 @@ function solidColorMode(timing) {
 	});
 }
 
-function gradientMode(timing){
-
-}
+function gradientMode(timing) {}
 
 let animX = 0;
 let animY = 0;
@@ -715,11 +843,195 @@ function slideImageYMode(timing) {
 	sampleCanvasAtPixels(ctx, flatPixels);
 }
 
-function slideImageXYMode(){}
-function slideImageXMirroredMode(){}
-function slideImageYMirroredMode(){}
-function slideImageXYMirroredMode(){}
+function slideImageXYMode() {}
+function slideImageXMirroredMode() {}
+function slideImageYMirroredMode() {}
+function slideImageXYMirroredMode() {}
 
+// ------------------------------------------------------------------------
+// Find light in image
+
+const camCanvas = createCanvas(WIDTH, HEIGHT);
+const camCtx = camCanvas.getContext('2d');
+
+// load image
+// setupCamImage('assets/testImages/pink-dot.png');
+
+function setupCamImage(imageName) {
+	loadImage(__www + '/' + imageName).then((camImage) => {
+		camCtx.drawImage(camImage, 0, 0, WIDTH, HEIGHT);
+		let imageData = camCtx.getImageData(0, 0, WIDTH, HEIGHT);
+		let maskedData = thresholdMask(imageData, 0x550055);
+		let bounds = getColorBounds(maskedData, 0xffffff, 24);
+		console.log('pink dot color bounds:', bounds);
+		camCtx.putImageData(maskedData, 0, 0);
+
+		let out = fs.createWriteStream(__www + '/assets/testImages/test.png');
+		let stream = canvas.createPNGStream();
+		stream.pipe(out);
+		out.on('finish', () => {
+			console.log('The PNG file was created.');
+		});
+	});
+}
+
+function thresholdMask(imageData, thresholdColor) {
+	thresholdColor = Color.parseColor(thresholdColor);
+	let thresholdSum = thresholdColor.r + thresholdColor.g + thresholdColor.b;
+	let pixelIndex = 0;
+	while (pixelIndex * 4 < imageData.data.length) {
+		let dataIndex = pixelIndex * 4;
+		let pixelSum =
+			imageData.data[dataIndex] +
+			imageData.data[dataIndex + 1] +
+			imageData.data[dataIndex + 2];
+		if (pixelSum < thresholdSum) {
+			imageData.data[dataIndex] =
+				imageData.data[dataIndex + 1] =
+				imageData.data[dataIndex + 2] =
+					0;
+		} else {
+			imageData.data[dataIndex] =
+				imageData.data[dataIndex + 1] =
+				imageData.data[dataIndex + 2] =
+					0xff;
+		}
+		pixelIndex++;
+	}
+	return imageData;
+}
+
+function getColorBounds(imageData, thresholdColor, threshold = 24) {
+	let minColor = Color.parseColor(thresholdColor);
+	let maxColor = Color.parseColor(thresholdColor);
+
+	minColor.r = Math.max(0, minColor.r - threshold);
+	minColor.g = Math.max(0, minColor.g - threshold);
+	minColor.b = Math.max(0, minColor.b - threshold);
+
+	maxColor.r = Math.min(0xff, maxColor.r + threshold);
+	maxColor.g = Math.min(0xff, maxColor.g + threshold);
+	maxColor.b = Math.min(0xff, maxColor.b + threshold);
+
+	let pixelIndex = 0;
+	let numFound = 0;
+	let minX = imageData.width;
+	let maxX = 0;
+	let minY = imageData.height;
+	let maxY = 0;
+
+
+	while (pixelIndex * 4 < imageData.data.length) {
+		let dataIndex = pixelIndex * 4;
+
+		let x = pixelIndex % imageData.width;
+		let y = Math.floor(pixelIndex / imageData.height);
+
+		let r = imageData.data[dataIndex];
+		let g = imageData.data[dataIndex + 1];
+		let b = imageData.data[dataIndex + 2];
+
+		if (
+			r >= minColor.r &&
+			r <= maxColor.r &&
+			g >= minColor.g &&
+			g <= maxColor.g &&
+			b >= minColor.b &&
+			b <= maxColor.b
+		) {
+			numFound++;
+			if (x < minX) minX = x;
+			if (x > maxX) maxX = x;
+			if (y < minY) minY = y;
+			if (y > maxY) maxY = y;
+		}
+
+		pixelIndex++;
+	}
+
+	if (numFound === 0) {
+		return {
+			minX: 0,
+			maxX: imageData.width,
+			minY: 0,
+			maxY: imageData.height,
+			centerX: imageData.width / 2,
+			centerY: imageData.height / 2,
+			numFound: numFound,
+		};
+	}
+
+	let centerX = minX + (maxX - minX);
+	let centerY = minY + (maxY - minY);
+
+	return {
+		minX,
+		maxX,
+		minY,
+		maxY,
+		numFound,
+		centerX,
+		centerY,
+	};
+}
+
+
+// FIXME: translate prop coords into light fixtures
+// ------------------------------------------------------------------------
+// temporary section to change data format
+
+// let letterFixture = LightFixture.fromObject(letterFixtureData);
+// connectedLightFixtures.push(letterFixture);
+// fs.writeFileSync(path.resolve(__dirname, './savedLightFixtures.json'), JSON.stringify(connectedLightFixtures,null, '\t'));
+
+
+// process saved light fixtures
+savedLightFixtureData.forEach(lfData => {
+	let fixture = LightFixture.fromObject(lfData);
+	connectedLightFixtures.push(fixture)
+});
+
+// FIXME: move this to on light fixture connect
+let flatPixels = _.map(connectedLightFixtures, fixture => fixture.pixels);
+flatPixels = _.flatten(flatPixels);
+
+/*
+let letterPixels = {
+	p: propCoords.p.map((coord) => {
+		return new Pixel(coord[0], coord[1]);
+	}),
+	j: propCoords.j.map((coord) => {
+		return new Pixel(coord[0], coord[1]);
+	}),
+	g: propCoords.g.map((coord) => {
+		return new Pixel(coord[0], coord[1]);
+	}),
+};
+
+let flatPixels = []
+	.concat(letterPixels.p)
+	.concat(letterPixels.j)
+	.concat(letterPixels.g);
+
+
+// convert Pixels to new groups format
+letterPixels.p.forEach((px, i) => {
+	px.group = 'p';
+})
+letterPixels.j.forEach((px, i) => {
+	px.group = 'j';
+})
+letterPixels.g.forEach((px, i) => {
+	px.group = 'g';
+})
+
+// setup new light fixture
+let tempFixture = new LightFixture();
+tempFixture.pixels = flatPixels;
+tempFixture.numPixels = flatPixels.length;
+
+fs.writeFileSync(path.resolve(__dirname, './letterFixture.json'), JSON.stringify(tempFixture,null, '\t'));
+*/
 
 // ------------------------------------------------------------------------
 // elegantly end the server

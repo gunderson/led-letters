@@ -1,5 +1,15 @@
+let pixelMappingMode = false;
+
 let io = window.io;
-const socket = io();
+const socket = io(`ws://${window.location.host}`, {
+	reconnectionDelayMax: 10000,
+	auth: {
+		token: '123',
+	},
+	query: {
+		id: 'my-value',
+	},
+});
 
 const img = document.getElementById('baseImage');
 const displayCanvas = document.getElementById('display');
@@ -13,13 +23,79 @@ const HEIGHT = 600;
 // --------------------------------------------------------------------------------------
 // Input events
 
-let playButton = document.querySelector('#playpause');
-
-playButton.addEventListener('click', () => {
+$('#play-pause').addEventListener('click', () => {
 	socket.emit('toggle-play');
-})
+});
 
-function onClickAnimationImage(event){
+$('#start-camera').addEventListener('click', startCamera);
+
+$('#start-mapping').addEventListener('click', () => {
+	pixelMappingMode = true;
+	socket.emit('start-pixel-mapping', {
+		fixtureName: '', // leave blank for all
+	});
+});
+
+$('#map-next').addEventListener('click', () => {
+	socket.emit('found-pixel', {
+		id: 0,
+		x: 0,
+		y: 0,
+	});
+});
+
+$('#fps-slider').addEventListener('change', (event) => {
+	// change event is not fired if the value is set via script
+	socket.emit('set-fps', {
+		fps: event.target.value,
+	});
+});
+
+$('#fps-slider').addEventListener('input', (event) => {
+	$('#fps-value').innerHTML = event.target.value;
+});
+
+$$$('button.fps').forEach((btn) => {
+	btn.addEventListener('click', (event) => {
+		socket.emit('set-fps', {
+			fps: event.target.value,
+		});
+		displayFPS(event.target.value);
+	});
+});
+
+function displayFPS(value) {
+	$('#fps-slider').value = value;
+	$('#fps-value').innerHTML = value;
+}
+
+$('button#set-animation-mode').addEventListener('click', (event) => {
+	let modeName = $('select#animation-mode-selector').value;
+	socket.emit('set-animation-mode', modeName);
+});
+
+$$$('section h2').forEach(($h2) => {
+	$h2.addEventListener('click', (event) => {
+		let $section = event.target.parentNode;
+		$section.classList.toggle('closed');
+	});
+});
+
+window.addEventListener('keydown', (event) => {
+	if (pixelMappingMode) {
+		switch (event.key) {
+			case 'ArrowLeft':
+				console.log('keydown', event.key);
+				event.preventDefault();
+				// ask for next pixel
+				break;
+			default:
+		}
+	}
+	return false;
+});
+
+function onClickAnimationImage(event) {
 	console.log(event);
 	let img = event.target;
 	socket.emit('set-anim-image', basename(img.src));
@@ -28,305 +104,486 @@ function onClickAnimationImage(event){
 // --------------------------------------------------------------------------------------
 // handle sending a file
 
-document.getElementById("uploadButton").addEventListener("click",function(event) {
+document.getElementById('upload-button').addEventListener('click', (event) => {
 	event.preventDefault();
-	
-	var data = new FormData()
-	data.append('image', document.getElementById("uploadImageFile").files[0])
 
-	fetch("/upload", {
+	var data = new FormData();
+	data.append('image', document.getElementById('upload-image-file').files[0]);
+
+	fetch('/upload', {
 		method: 'POST',
 		body: data,
 		// headers: headers
-	})
+	});
 	return false;
 });
 
 // --------------------------------------------------------------------------------------
 // socket handling
 
-socket.on('led-state', (state) => {
-	if (state.colors.length !== allPixels.length){
-		console.error('pixel counts mis-match');
-	}
-	state.colors.forEach((color, i) => {
-		allPixels[i].color = color;
+let drawn = 0;
+
+socket.on('draw', (message) => {
+	document.querySelector('#timecode').innerHTML = message.timecode;
+
+	connectedLightFixtures.forEach(fixture => {
+		let fixtureData = message.fixtureData.find(data => data.hostname === fixture.hostname);
+		if (fixtureData && fixtureData.pixels){
+			fixture.pixels.forEach((pixel, i) => {
+				pixel.color = fixtureData.pixels[i].color;
+			})
+		}
 	})
+	requestAnimationFrame(draw);
+});
 
-	draw();
-})
+socket.on('upload-list', (list) => {
+	let $colormapsHolder = document.querySelector('#colormaps');
+	$colormapsHolder.replaceChildren();
 
-socket.on("upload-list", list => {
-	console.log(list);
-	let uploadImages = document.querySelector("#uploadImages")
-	uploadImages.replaceChildren();
-
-	list.forEach(url => {
-		let img = document.createElement("img");
+	list.forEach((url) => {
+		let img = document.createElement('img');
 		img.src = url;
-		img.width = 100;
+		img.height = 100;
 		img.classList.add('animation-image');
 		img.addEventListener('click', onClickAnimationImage);
-		uploadImages.appendChild(img);
-	})
+		$colormapsHolder.appendChild(img);
+	});
 });
 
 socket.on('state', (state) => {
 	// mark selected animation image
 	let animImages = document.querySelectorAll('.animation-image');
-	animImages.forEach(img => {
-		if (basename(img.src) === state.animationImage){
+	animImages.forEach((img) => {
+		if (basename(img.src) === state.animationImage) {
 			img.classList.add('selected');
 		} else {
 			img.classList.remove('selected');
 		}
-	})
-})
+	});
+
+	console.log(state);
+	displayFPS(state.fps);
+
+	if (state.playState === 'PAUSED') {
+		$('#play-pause').textContent = 'PLAY';
+	}
+	if (state.playState === 'PLAYING') {
+		$('#play-pause').textContent = 'PAUSE';
+	}
+
+	// if fixtures have changed
+	let allFixturesFound = state.fixtures.reduce((memo, fixture) => {
+		return (
+			memo &&
+			connectedLightFixtures.filter(
+				(conFixture) => conFixture.hostname === fixture.hostname
+			).length > 0
+		);
+	}, true);
+
+	// check to see that all of the connected fixtures are also known
+
+	let fixturesHaveChanged = !allFixturesFound;
+	// console.log("fixturesHaveChanged", fixturesHaveChanged);
+
+	connectedLightFixtures = state.fixtures;
+
+	let $$$lightFixtures = $$$('#light-fixtures table tr');
+	if ($$$lightFixtures)
+		// keep the title-row
+		$$$lightFixtures.shift();
+	$$$lightFixtures.forEach((row) => {
+		row.parentNode.remove(row);
+	});
+
+	connectedLightFixtures.forEach((fixture) => {
+		console.log('fixture', fixture);
+		let $el = document.createElement('tr');
+		$el.innerHTML = `<td>${fixture.hostname}</td>
+			<td data-name="${fixture.hostname}" class="action begin-mapping">Map Fixture</td>
+			<td data-name="${fixture.hostname}" data-highlightMode="${HIGHLIGHT_MODE.HIGHLIGHT_FIXTURE}" class="action highlight">Highlight Fixture</td>
+			<td data-name="${fixture.hostname}" data-highlightMode="${HIGHLIGHT_MODE.SOLO_FIXTURE}" class="action solo">Solo</td>`;
+
+		$el.dataset.name = fixture.hostname;
+		$('#light-fixtures table').appendChild($el);
+
+		$el.querySelector('.begin-mapping').addEventListener('click', (event) => {
+			setActiveCell(event.target);
+			console.log('click', event.target.dataset.name);
+		});
+		$el.querySelector('.highlight').addEventListener('click', (event) => {
+			toggleHighlightFixtureMode(event.target.dataset.name);
+			setActiveCell(event.target);
+			console.log('click', event.target.dataset.name);
+		});
+		$el.querySelector('.solo').addEventListener('click', (event) => {
+			toggleSoloFixtureMode(event.target.dataset.name);
+			setActiveCell(event.target);
+			console.log('click', event.target.dataset.name);
+		});
+	});
+
+	// find all the pixel groups
+	// go through each pixel and grab its group
+	pixelsByGroup = {};
+
+	connectedLightFixtures.forEach((fixture) => {
+		fixture.pixels.forEach((pixel) => {
+			if (pixel.group) {
+				if (!pixelsByGroup[pixel.group]) {
+					pixelsByGroup[pixel.group] = [];
+				}
+				pixelsByGroup[pixel.group].push(pixel);
+			}
+		});
+	});
+
+	let $$$pixelGroups = $$$('#pixel-groups table tr');
+	$$$pixelGroups.shift();
+	$$$pixelGroups.forEach((row) => {
+		row.parentNode.remove(row);
+	});
+
+	Object.keys(pixelsByGroup).forEach((groupName) => {
+		let $el = document.createElement('tr');
+
+		$el.innerHTML = `<td>${groupName}</td>
+		<td data-name="${groupName}" class="action begin-mapping">Map Group</td>
+		<td data-name="${groupName}" data-highlightMode="${HIGHLIGHT_MODE.HIGHLIGHT_GROUP}" class="action highlight">Highlight</td>
+		<td data-name="${groupName}" data-highlightMode="${HIGHLIGHT_MODE.SOLO_GROUP}" class="action solo">Solo</td>`;
+
+		$el.dataset.name = groupName;
+		$('#pixel-groups table').appendChild($el);
+
+		$el.querySelector('.begin-mapping').addEventListener('click', (event) => {
+			setActiveCell(event.target);
+			console.log('click', event.target.dataset.name);
+		});
+		$el.querySelector('.highlight').addEventListener('click', (event) => {
+			toggleHighlightGroupMode(event.target.dataset.name);
+			setActiveCell(event.target);
+			console.log('click', event.target.dataset.name);
+		});
+		$el.querySelector('.solo').addEventListener('click', (event) => {
+			// FIXME: toggle naively always turns off on second click instead of adjusting to new param
+			toggleSoloGroupMode(event.target.dataset.name);
+			setActiveCell(event.target);
+			console.log('click', event.target.dataset.name);
+		});
+	});
+
+	function setActiveRow($cell) {
+		let $row = $cell.parentNode;
+		let $table = $row.parentNode;
+		let $$$rows = $$$('#light-fixtures tr, #pixel-groups tr');
+		$$$rows.forEach((row) => {
+			row.classList.remove('active');
+		});
+
+		console.log(highlightMode, $cell.dataset.highlightmode);
+
+		// use the highlight state to determine what to do instead of class presennce
+		if (highlightMode === $cell.dataset.highlightmode) {
+			$row.classList.add('active');
+		}
+	}
+
+	function setActiveCell($cell) {
+		setActiveRow($cell);
+
+		let $row = $cell.parentNode;
+		let $table = $row.parentNode;
+		let $$$cells = $$$('#light-fixtures td, #pixel-groups td');
+		$$$cells.forEach((cell) => {
+			cell.classList.remove('active');
+		});
+
+		// use the highlight state to determine what to do instead of class presennce
+		if (highlightMode === $cell.dataset.highlightmode) {
+			$cell.classList.add('active');
+		}
+	}
+
+	let $animationModeSelector = $('#animation-mode-selector');
+	$animationModeSelector.value = state.animationMode;
+
+	console.log('animation mode', state.animationMode);
+});
+
+socket.on('map-next-pixel', (message) => {
+	let pixelIndex = message.pixelIndex;
+	// snapshot the camera feed to canvas
+	// find the pixel location
+	// record it in the pixel data
+	// send the location back to the server
+	socket.emit('found-pixel-location', {
+		pixelIndex: pixelIndex,
+		currentPixel: {},
+	});
+});
 
 // --------------------------------------------------------------------------------------
-// image handling
+// Pixel Mapping
 
-let pixels = {};
-
-let propCoords = {
-	"p": [
-		[0.0875, 0.5875],
-		[0.0875, 0.5675],
-		[0.09, 0.54],
-		[0.09125, 0.51],
-		[0.0925, 0.48125],
-		[0.0925, 0.44875],
-		[0.09125, 0.42125],
-		[0.0925, 0.3875],
-		[0.09, 0.35625],
-		[0.08875, 0.32875],
-		[0.08875, 0.30125],
-		[0.09, 0.26875],
-		[0.09125, 0.23875],
-		[0.08875, 0.20375],
-		[0.0875, 0.17375],
-		[0.08875, 0.145],
-		[0.09125, 0.12125],
-		[0.11625, 0.1175],
-		[0.14625, 0.1175],
-		[0.18, 0.11875],
-		[0.21125, 0.12],
-		[0.23875, 0.12125],
-		[0.27125, 0.1275],
-		[0.30375, 0.1375],
-		[0.32875, 0.155],
-		[0.35375, 0.17625],
-		[0.37, 0.2],
-		[0.385, 0.23],
-		[0.39125, 0.2575],
-		[0.39375, 0.29],
-		[0.3875, 0.3175],
-		[0.37625, 0.345],
-		[0.3625, 0.36875],
-		[0.34, 0.39125],
-		[0.32625, 0.4],
-		[0.2975, 0.41375],
-		[0.27125, 0.42125],
-		[0.24125, 0.425],
-		[0.21625, 0.425],
-		[0.19125, 0.425],
-		[0.1725, 0.42],
-		[0.155, 0.41375],
-		[0.16375, 0.395],
-		[0.1925, 0.4],
-		[0.22125, 0.40125],
-		[0.2525, 0.4],
-		[0.28, 0.395],
-		[0.30375, 0.39],
-		[0.33125, 0.37375],
-		[0.34625, 0.35375],
-		[0.36125, 0.3225],
-		[0.37375, 0.29875],
-		[0.37375, 0.26875],
-		[0.36625, 0.235],
-		[0.355, 0.2125],
-		[0.34, 0.1925],
-		[0.32125, 0.17375],
-		[0.2975, 0.16],
-		[0.265, 0.15125],
-		[0.2475, 0.1475],
-		[0.22, 0.14375],
-		[0.19, 0.14375],
-		[0.15625, 0.14],
-		[0.13, 0.15125],
-		[0.11625, 0.1775],
-		[0.115, 0.2075],
-		[0.115, 0.2375],
-		[0.1125, 0.2675],
-		[0.11625, 0.29875],
-		[0.11625, 0.32375],
-		[0.115, 0.35625],
-		[0.11375, 0.39],
-		[0.11625, 0.4175],
-		[0.115, 0.44375],
-		[0.11375, 0.47375],
-		[0.11375, 0.50125],
-		[0.11375, 0.53125],
-		[0.115, 0.5625]
-	],
-	"j": [
-		[0.35875, 0.5625],
-		[0.34, 0.555],
-		[0.31875, 0.545],
-		[0.3225, 0.525],
-		[0.34625, 0.53125],
-		[0.3775, 0.53125],
-		[0.405, 0.53],
-		[0.43125, 0.51625],
-		[0.44875, 0.49875],
-		[0.46125, 0.475],
-		[0.465, 0.4475],
-		[0.46375, 0.41625],
-		[0.465, 0.3925],
-		[0.4675, 0.3625],
-		[0.46625, 0.3275],
-		[0.46875, 0.30125],
-		[0.46875, 0.28],
-		[0.47125, 0.24],
-		[0.47, 0.20875],
-		[0.47, 0.185],
-		[0.47125, 0.1575],
-		[0.48125, 0.12125],
-		[0.4925, 0.145],
-		[0.49375, 0.17375],
-		[0.4925, 0.21125],
-		[0.49, 0.24],
-		[0.48875, 0.26875],
-		[0.4875, 0.3],
-		[0.4875, 0.33125],
-		[0.48625, 0.36],
-		[0.4875, 0.38875],
-		[0.4875, 0.41625],
-		[0.48625, 0.4425],
-		[0.48125, 0.4725],
-		[0.47, 0.50125],
-		[0.45125, 0.52625],
-		[0.435, 0.5375],
-		[0.41125, 0.5475],
-		[0.3925, 0.5575]
-	],
-	"g": [
-		[0.74875, 0.56375],
-		[0.74, 0.55],
-		[0.72, 0.54875],
-		[0.7, 0.5425],
-		[0.675, 0.53375],
-		[0.6525, 0.52],
-		[0.6275, 0.50125],
-		[0.60875, 0.48125],
-		[0.59375, 0.45875],
-		[0.58, 0.4325],
-		[0.57, 0.40375],
-		[0.565, 0.37625],
-		[0.56375, 0.34625],
-		[0.5675, 0.31625],
-		[0.57625, 0.28625],
-		[0.58625, 0.26125],
-		[0.60375, 0.235],
-		[0.62125, 0.21125],
-		[0.6425, 0.19],
-		[0.66875, 0.1725],
-		[0.69375, 0.15875],
-		[0.7225, 0.15],
-		[0.75125, 0.14375],
-		[0.78125, 0.145],
-		[0.81, 0.14625],
-		[0.8375, 0.15375],
-		[0.86625, 0.16625],
-		[0.89, 0.18],
-		[0.90625, 0.19375],
-		[0.92125, 0.20875],
-		[0.9225, 0.2275],
-		[0.8975, 0.22125],
-		[0.875, 0.2025],
-		[0.8525, 0.185],
-		[0.82625, 0.17375],
-		[0.8, 0.1675],
-		[0.7725, 0.16625],
-		[0.745, 0.16625],
-		[0.71625, 0.17375],
-		[0.69, 0.185],
-		[0.66375, 0.2],
-		[0.6425, 0.21875],
-		[0.62375, 0.24125],
-		[0.605, 0.2675],
-		[0.595, 0.29375],
-		[0.5875, 0.32125],
-		[0.585, 0.35],
-		[0.58625, 0.37875],
-		[0.59125, 0.40625],
-		[0.6025, 0.4325],
-		[0.615, 0.45625],
-		[0.63375, 0.47875],
-		[0.65375, 0.495],
-		[0.6775, 0.5125],
-		[0.7025, 0.52375],
-		[0.72875, 0.53125],
-		[0.75625, 0.53375],
-		[0.78375, 0.5325],
-		[0.8125, 0.52875],
-		[0.8375, 0.51875],
-		[0.86125, 0.50375],
-		[0.88625, 0.4875],
-		[0.905, 0.46375],
-		[0.91875, 0.44375],
-		[0.9325, 0.41625],
-		[0.915, 0.39875],
-		[0.88625, 0.39625],
-		[0.8625, 0.39625],
-		[0.835, 0.39625],
-		[0.8075, 0.3925],
-		[0.80375, 0.3775],
-		[0.82875, 0.375],
-		[0.86125, 0.375],
-		[0.8875, 0.375],
-		[0.915, 0.37625],
-		[0.9425, 0.375],
-		[0.96625, 0.39],
-		[0.96125, 0.4125],
-		[0.95125, 0.435],
-		[0.935, 0.46125],
-		[0.9225, 0.47875],
-		[0.905, 0.4975],
-		[0.88125, 0.515],
-		[0.86, 0.52875],
-		[0.8375, 0.54],
-		[0.82, 0.5425],
-		[0.795, 0.55125],
-		[0.7775, 0.56]
-	]
+function prepareToMapFixture(fixtureName) {
+	//start the camera
+	startCamera();
+	//send message to server
+	socket.emit('start-pixel-mapping', {
+		fixtureName: fixtureName,
+	});
+}
+function prepareToMapGroup(fixtureName) {
+	//start the camera
+	startCamera();
+	//send message to server
+	socket.emit('start-pixel-mapping', {
+		fixtureName: fixtureName,
+	});
 }
 
-pixels.p = propCoords.p.map((coords) => {
-	return new Pixel(coords[0], coords[1]);
-});
-pixels.j = propCoords.j.map((coords) => {
-	return new Pixel(coords[0], coords[1]);
-});
-pixels.g = propCoords.g.map((coords) => {
-	return new Pixel(coords[0], coords[1]);
-});
+// --------------------------------------------------------------------------------------
+// Light Fixture handling
 
-let allPixels = [].concat(pixels.p).concat(pixels.j).concat(pixels.g);
+let connectedLightFixtures = [];
 
-console.log('allPixels.length', allPixels.length);
+let pixelsByGroup = {};
+
+// --------------------------------------------------------------------------------------
+// image analysis
+
+const camCanvas = document.getElementById('cam-analysis');
+const camCtx = camCanvas.getContext('2d');
+const camDisplay = document.getElementById('cam-display');
+let cameraStream;
+
+function startCamera() {
+	//getusermedia
+	navigator.mediaDevices
+		.getUserMedia({
+			audio: false,
+			video: { width: 800, height: 600 },
+		})
+		.then((stream) => {
+			/* use the stream */
+			console.log('streaming');
+			camDisplay.srcObject = stream;
+		})
+		.catch((err) => {
+			/* handle the error */
+		});
+}
+
+function stopCamera() {
+	camDisplay.srcObject.getTracks().forEach((track) => {
+		if (track.readyState == 'live') {
+			track.stop();
+		}
+	});
+}
+
+function copyCamToCanvas(camstream, camCtx) {
+	camCtx.drawImage(camstream, 0, 0);
+}
+
+function thresholdMask(imageData, thresholdColor) {
+	thresholdColor = Color.parseColor(thresholdColor);
+	let thresholdSum = thresholdColor.r + thresholdColor.g + thresholdColor.b;
+	let pixelIndex = 0;
+	while (pixelIndex * 4 < imageData.data.length) {
+		let dataIndex = pixelIndex * 4;
+		let pixelSum =
+			imageData.data[dataIndex] +
+			imageData.data[dataIndex + 1] +
+			imageData.data[dataIndex + 2];
+		if (pixelSum < thresholdSum) {
+			imageData.data[dataIndex] =
+				imageData.data[dataIndex + 1] =
+				imageData.data[dataIndex + 2] =
+					0;
+		} else {
+			imageData.data[dataIndex] =
+				imageData.data[dataIndex + 1] =
+				imageData.data[dataIndex + 2] =
+					0xff;
+		}
+		pixelIndex++;
+	}
+	return imageData;
+}
+
+function getColorBounds(imageData, thresholdColor, threshold = 24) {
+	let minColor = Color.parseColor(thresholdColor);
+	let maxColor = Color.parseColor(thresholdColor);
+
+	minColor.r = Math.max(0, minColor.r - threshold);
+	minColor.g = Math.max(0, minColor.g - threshold);
+	minColor.b = Math.max(0, minColor.b - threshold);
+
+	maxColor.r = Math.min(0xff, maxColor.r + threshold);
+	maxColor.g = Math.min(0xff, maxColor.g + threshold);
+	maxColor.b = Math.min(0xff, maxColor.b + threshold);
+
+	let pixelIndex = 0;
+	let numFound = 0;
+	let minX = imageData.width;
+	let maxX = 0;
+	let minY = imageData.height;
+	let maxY = 0;
+
+	while (pixelIndex * 4 < imageData.data.length) {
+		let dataIndex = pixelIndex * 4;
+
+		let x = pixelIndex % imageData.width;
+		let y = Math.floor(pixelIndex / imageData.height);
+
+		let r = imageData.data[dataIndex];
+		let g = imageData.data[dataIndex + 1];
+		let b = imageData.data[dataIndex + 2];
+
+		if (
+			r >= minColor.r &&
+			r <= maxColor.r &&
+			g >= minColor.g &&
+			g <= maxColor.g &&
+			b >= minColor.b &&
+			b <= maxColor.b
+		) {
+			numFound++;
+			if (x < minX) minX = x;
+			if (x > maxX) maxX = x;
+			if (y < minY) minY = y;
+			if (y > maxY) maxY = y;
+		}
+
+		pixelIndex++;
+	}
+
+	if (numFound === 0) {
+		return {
+			minX: 0,
+			maxX: imageData.width,
+			minY: 0,
+			maxY: imageData.height,
+			centerX: imageData.width / 2,
+			centerY: imageData.height / 2,
+			numFound: numFound,
+		};
+	}
+
+	let centerX = minX + (maxX - minX);
+	let centerY = minY + (maxY - minY);
+
+	return {
+		minX,
+		maxX,
+		minY,
+		maxY,
+		numFound,
+		centerX,
+		centerY,
+	};
+}
+
+// --------------------------------------------------------------------------------------
+// HIGHLIGHT & SOLO
+
+const HIGHLIGHT_MODE = {
+	HIGHLIGHT_NONE: 'HIGHLIGHT_NONE',
+	SOLO_FIXTURE: 'SOLO_FIXTURE',
+	SOLO_GROUP: 'SOLO_GROUP',
+	HIGHLIGHT_FIXTURE: 'HIGHLIGHT_FIXTURE',
+	HIGHLIGHT_GROUP: 'HIGHLIGHT_GROUP',
+};
+
+let highlightLocalOnly = true;
+let highlightGroupName = '';
+let highlightFixtureName = '';
+let highlightMode = HIGHLIGHT_MODE.HIGHLIGHT_NONE;
+let lowlightAmount = 0.2;
+
+function toggleHighlightGroupMode(groupName){
+	if (highlightMode === HIGHLIGHT_MODE.HIGHLIGHT_GROUP && groupName === highlightGroupName){
+		// deactivate
+		highlightMode = HIGHLIGHT_MODE.HIGHLIGHT_NONE;
+		highlightGroupName = '';
+	} else {
+		highlightMode = HIGHLIGHT_MODE.HIGHLIGHT_GROUP;
+		highlightFixtureName = '';
+		highlightGroupName = groupName;
+	}
+	return highlightMode;
+}
+
+function toggleSoloGroupMode(groupName){
+	if (highlightMode === HIGHLIGHT_MODE.SOLO_GROUP && groupName === highlightGroupName){
+		// deactivate
+		highlightMode = HIGHLIGHT_MODE.HIGHLIGHT_NONE;
+		highlightGroupName = '';
+	} else {
+		highlightMode = HIGHLIGHT_MODE.SOLO_GROUP;
+		highlightFixtureName = '';
+		highlightGroupName = groupName;
+	}
+	return highlightMode;
+}
+
+function toggleHighlightFixtureMode(fixtureName){
+	if (highlightMode === HIGHLIGHT_MODE.HIGHLIGHT_FIXTURE && fixtureName === highlightFixtureName){
+		// deactivate
+		highlightMode = HIGHLIGHT_MODE.HIGHLIGHT_NONE;
+		highlightFixtureName = '';
+	} else {
+		highlightMode = HIGHLIGHT_MODE.HIGHLIGHT_FIXTURE;
+		highlightFixtureName = fixtureName;
+		highlightGroupName = '';
+	}
+	return highlightMode;
+}
+
+function toggleSoloFixtureMode(fixtureName){
+	if (highlightMode === HIGHLIGHT_MODE.SOLO_FIXTURE && fixtureName === highlightFixtureName){
+		// deactivate
+		highlightMode = HIGHLIGHT_MODE.HIGHLIGHT_NONE;
+		highlightFixtureName = '';
+	} else {
+		highlightMode = HIGHLIGHT_MODE.SOLO_FIXTURE;
+		highlightFixtureName = fixtureName;
+		highlightGroupName = '';
+	}
+	return highlightMode;
+}
 
 // --------------------------------------------------------------------------------------
 // PLAYBACK
 
-
 function draw() {
-	displayCtx.strokeStyle = '#ffffff';
+	// blank the canvas
+	// displayCtx.fillStyle = '#000000';
+	// displayCtx.fillRect(0,0,WIDTH,HEIGHT);
+	displayCtx.clearRect(0,0,WIDTH,HEIGHT);
+
 	displayCtx.lineWidth = 2;
+
+	let allPixels = connectedLightFixtures.map((fixture) => fixture.pixels);
+	allPixels = [].concat.apply(this, allPixels);
 	allPixels.forEach((pxl) => {
-		displayCtx.fillStyle = `rgb(${getR(pxl.color)}, ${getG(pxl.color)}, ${getB(
-			pxl.color
-		)})`;
+		let color = pxl.color;
+		let strokeColor = 0xffffff;
+
+		if (highlightMode === HIGHLIGHT_MODE.HIGHLIGHT_GROUP && highlightLocalOnly && pxl.group !== highlightGroupName){
+			color = multiplyColor(color, lowlightAmount);
+			strokeColor = multiplyColor(strokeColor, lowlightAmount);
+		}
+
+		if (highlightMode === HIGHLIGHT_MODE.SOLO_GROUP && highlightLocalOnly && pxl.group !== highlightGroupName){
+			return;
+		}
+
+		displayCtx.fillStyle = `rgb(${getR(color)}, ${getG(color)}, ${getB(color)})`;	
+		displayCtx.strokeStyle = `rgb(${getR(strokeColor)}, ${getG(strokeColor)}, ${getB(strokeColor)})`;
+
 		displayCtx.fillRect(pxl.x * WIDTH, pxl.y * HEIGHT, 15, 15);
 		displayCtx.strokeRect(pxl.x * WIDTH, pxl.y * HEIGHT, 15, 15);
 	});
@@ -348,7 +605,39 @@ function getB(color) {
 	return color & 0xff;
 }
 
-function basename(path){
+function multiplyColor(orig, multiplier) {
+	let oR = getR(orig);
+	let oG = getG(orig);
+	let oB = getB(orig);
+
+	let mR = multiplier;
+	let mG = multiplier;
+	let mB = multiplier;
+
+	if (multiplier > 1) {
+		mR = getR(multiplier) / 255;
+		mG = getG(multiplier) / 255;
+		mB = getB(multiplier) / 255;
+	}
+
+	return ((oR * mR) << 16) | ((oG * mG) << 8) | ((oB * mB) << 0);
+}
+
+function basename(path) {
 	let parts = path.split('/');
 	return parts[parts.length - 1];
+}
+
+// returns an element or an array of elements or null
+function $$$(selector) {
+	let nodeList = document.querySelectorAll(selector);
+	if (nodeList.length === 0) {
+		return [];
+	}
+	let nodeArray = [];
+	nodeList.forEach((el) => nodeArray.push(el));
+	return nodeArray;
+}
+function $(selector) {
+	return document.querySelector(selector);
 }

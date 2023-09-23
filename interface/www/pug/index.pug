@@ -2,31 +2,85 @@ doctype html
 html(lang="en")
 	head
 		link(rel="stylesheet", href="/css/style.css")
-	head
+	script
+		| var request = "#{request}";
+		| var sessionId = "#{sessionId}"
 	body 
 		header 
-			h1 Led Letters Monitor & Controller
-		canvas#display(width=800, height=600)
+			h1 Large-field LED dislpay Control Panel
+		section#realtime-display
+			h2 Realtime display
+			.contents
+				.status
+					canvas#display(width=800, height=600)
+					#timecode
+				
+				.controls
+					label
+						button#play-pause PAUSE
+						button#reset RESET
+					label#fps 
+						span#fps-value
+						span FPS 
+						input#fps-slider(type='range', min=0, max=120, step=1, value=60)
+						div.quick-picks
+							button.fps(value=1) 1
+							button.fps(value=10) 10
+							button.fps(value=15) 15
+							button.fps(value=25) 25
+							button.fps(value=30) 30
+							button.fps(value=60) 60
+							button.fps(value=120) 120
+					label#animation-mode
+						span Animation Mode
+						select#animation-mode-selector(name="mode-selector")
+							each mode in animModes
+								option(value=mode) #{mode}
+						button#set-animation-mode SET
+		section#colormap-menu
+			h2 Color Maps
+			.contents
+				#colormaps
+				h4 Upload a new colormap
+				form#upload-image-form(enctype='multipart/form-data')
+					input#upload-image-file(type="file")
+					button#upload-button Upload 
+
+		section#light-fixtures
+			h2 Light Fixtures
+			.contents
+				table 
+					tr.header
+						th Fixture Name 
+						th 
+						th 
+						th 
+		section#pixel-groups
+			h2 Pixel Groups
+			.contents
+				table
+					tr.header
+						th Group Name 
+						th 
+						th 
+						th 
 		
-		.controls
-			button#playpause Play / Pause
-			input#speed(type='range', min=0, max=1, step=0.01, value=0.5)
-			#uploadImages
-			select#mode-selector(name="mode-selector") 
-				option(value="solidColorMode") Solid Color
-				option(value="slideImageXMode") Slide Image X
-				option(value="slideImageYMode") Slide Image Y
-
-		.portPicker
-
-		.mode.solidColorMode
-			//- add color picker
-		.mode.slideImageXMode
-		.mode.slideImageYMode
-			form#uploadImageForm(enctype='multipart/form-data')
-				input#uploadImageFile(type="file")
-				button#uploadButton Upload 
-		main 
+		section#mode-controls
+			h2 Mode Controls
+			.contents
+				.mode.solid-color-mode
+					//- add color picker
+				.mode.slide-image-x-mode
+				.mode.slide-image-y-mode
+			
+		section#camera-pixel-analyzer 
+			h2 Camera Pixel Analyzer
+			.contents
+				canvas#cam-analysis(width=800, height=600)
+				video#cam-display(autoplay=true, width=800, height=600)
+				button#start-camera Start Camera
+				button#start-mapping Start mapping 
+				button#map-next Map Next 
 		footer 
 	script(type="text/javascript", src="js/banner.js")
 	script(type="text/javascript", src="/socket.io/socket.io.js")
